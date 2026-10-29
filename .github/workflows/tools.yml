@@ -1,0 +1,80 @@
+name: Desktop tools
+
+# yt-dlp and FFmpeg for the Mac and Windows apps, published once as the
+# desktop-tools-1 release. The apps fetch them on their first save and check
+# each file against the fingerprint pinned in the app's lib/desktop_tools.dart,
+# so a published file is never replaced: a new version gets a new tag. The app
+# code lives in a private repo; this one only holds these downloads.
+
+on:
+  push:
+    paths: ['.github/workflows/tools.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  TAG: desktop-tools-1
+  YTDLP: '2026.10.26'
+  FFMPEG_MAC_ARM64: https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip
+  FFMPEG_MAC_X64: https://ffmpeg.martin-riedl.de/download/macos/amd64/1789931006_9.0.2/ffmpeg.zip
+  FFMPEG_WIN: https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Already published?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "done=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch and check against the publishers' fingerprints
+        if: steps.check.outputs.done != '1'
+        run: |
+          set -euo pipefail
+          mkdir -p work out
+          cd work
+          base="https://github.com/yt-dlp/yt-dlp/releases/download/$YTDLP"
+          curl -fsSLO "$base/yt-dlp_macos"
+          curl -fsSLO "$base/yt-dlp.exe"
+          curl -fsSLO "$base/SHA2-256SUMS"
+          grep -E ' (yt-dlp_macos|yt-dlp\.exe)$' SHA2-256SUMS | sha256sum -c -
+          fetch() { # url name
+            curl -fsSL "$1" -o "$2"
+            echo "$(curl -fsSL "$1.sha256" | awk '{print $1}')  $2" | sha256sum -c -
+          }
+          fetch "$FFMPEG_MAC_ARM64" ffmpeg-macos-arm64.zip
+          fetch "$FFMPEG_MAC_X64" ffmpeg-macos-x64.zip
+          fetch "$FFMPEG_WIN" ffmpeg-windows-full.zip
+          # Only ffmpeg.exe from the Windows build, zipped the same way each time.
+          unzip -j ffmpeg-windows-full.zip '*/bin/ffmpeg.exe' -d win
+          touch -d '2026-01-01 00:00:00' win/ffmpeg.exe
+          (cd win && zip -X -9 ../ffmpeg-windows-x64.zip ffmpeg.exe)
+          mv yt-dlp_macos yt-dlp.exe ffmpeg-macos-arm64.zip ffmpeg-macos-x64.zip ffmpeg-windows-x64.zip ../out/
+          cd ../out
+          sha256sum * | tee ../SHA256SUMS
+          stat -c '%s %n' * | tee ../SIZES
+          mv ../SHA256SUMS ../SIZES .
+
+      - name: Publish
+        if: steps.check.outputs.done != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<NOTES
+          Helper programs the Pastatrade Music desktop apps download on their first save.
+          Each file is checked by the app against a pinned SHA-256 fingerprint.
+
+          - yt-dlp $YTDLP (Unlicense): https://github.com/yt-dlp/yt-dlp
+          - FFmpeg 9.0.2 (GPL): Mac builds by Martin Riedl, https://ffmpeg.martin-riedl.de ;
+            Windows build by gyan.dev, https://www.gyan.dev/ffmpeg/builds/ (ffmpeg.exe only).
+            FFmpeg source: https://ffmpeg.org/download.html
+          NOTES
+          gh release create "$TAG" out/* --repo "$GITHUB_REPOSITORY" \
+            --title "Desktop tools 1" --notes-file notes.md --prerelease --target "$GITHUB_SHA"
